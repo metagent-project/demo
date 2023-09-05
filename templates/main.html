@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Metagent Demo</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;  /* Disable scrollbars */
+    }
+    #container {
+      display: flex;
+      height: 100vh;  /* 100% of the viewport height */
+    }
+    iframe {
+      border: none;  /* Remove the default border */
+      height: 100%;
+    }
+    #game-frame {
+      flex: 1;  /* Take up all available space */
+    }
+    #chat-frame {
+      width: 40%;
+    }
+  </style>
+</head>
+<body>
+  <div id="user_id" style="display:none">{{user_id}}</div>
+
+  <div id="container">
+    <iframe id="game-frame" src="/game"></iframe>
+    <iframe id="chat-frame" src="/chat"></iframe>
+  </div>
+
+</body>
+</html>

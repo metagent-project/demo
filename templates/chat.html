@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat with Bot</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.2/css/all.min.css"
+        integrity="sha512-HK5fgLBL+xu6dm/Ii3z4xhlSUyZgTT9tuc/hSrtw6uzJOvgRr2a9jyxxT1ely+B+xFAmJKVSTbpM/CuL7qxO8w=="
+        crossorigin="anonymous" />
+
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/chat.css?ver=20230902">
+</head>
+
+<body>
+    <!-- <nav class="navbar">
+    <a href="/"><i class="fa fa-home"></i></a>
+    <a>Metagent Chat</a>
+  </nav> -->
+    <div class="chat-container">
+        <div class="chat">
+            <div class="chat-body">
+                <div style="height: 80px"></div>
+            </div>
+            <div class="chat-input">
+                <textarea placeholder="Type your message here"></textarea>
+                <button>Send</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        const gameWindow = parent.document.getElementById("game-frame").contentWindow;
+
+        let agent_name = '';
+        // Get user_id from parent window
+        let user_id = parent.document.getElementById("user_id").innerHTML;
+        let user_name = parent.document.getElementById("user_id").innerHTML;
+        console.log("user_id: " + user_id);
+        // Get references to chat elements
+        const chatBody = document.querySelector('.chat-body');
+        const chatInput = document.querySelector('.chat-input');
+        const chatInputTextarea = chatInput.querySelector('textarea');
+        const chatInputButton = chatInput.querySelector('button');
+        let chat_histories = {}; // map from agent_name to the list of chat_history
+        let agent_ai_conversations = {}; // map from agent_name to the conversation history with backend AI
+        let agent_names = [];
+        let game_initialized = false;
+        let game_started = false;
+
+        let user_context = {};
+
+        function getModeratorAgent() {
+            // Use a function for lazy evaluation. Otherwise the window may not be ready yet.
+            return gameWindow.document.getElementById('group_game_moderator_name').innerHTML;
+        }
+        function getTourGuideAgent() {
+            return gameWindow.document.getElementById('tour_guide_name').innerHTML;
+        }
+
+        function splitSpecialTags(output) {
+            // Match pairs and capture the content between them
+            const regex = /<\|([^|]+)_start\|>(.*?)<\|([^|]+)_end\|>/gs;
+
+            let matches;
+            let positions = [];
+
+            while ((matches = regex.exec(output)) !== null) {
+                // matches[1] will contain the tag between <|...|>
+                // matches[2] will contain the content between |> and the next <|...|>
+
+                // Store the position where the delimiter starts and ends
+                positions.push({ start: matches.index, end: regex.lastIndex });
+            }
+
+            // Split the text before and after each found delimiter
+            let splitTexts = [];
+            let start = 0;
+
+            for (let position of positions) {
+                splitTexts.push(output.substring(start, position.start));
+                splitTexts.push(output.substring(position.start, position.end));
+                start = position.end;
+            }
+
+            // Add the last piece
+            splitTexts.push(output.substring(start));
+
+            // Remove empty pieces
+            return splitTexts.filter(str => str !== "");;
+        }
+
+        function parseOutput(output) {
+            let splitTexts = splitSpecialTags(output);
+            if (splitTexts.length == 0) {
+                splitTexts.push("");
+            }
+            let parsedTexts = [];
+            const specialTags = ["agent", "delivery"];
+            for (let text of splitTexts) {
+                let isSpecialTag = false;
+                for (let tag of specialTags) {
+                    if (text.startsWith(`<|${tag}_start|>`)) {
+                        parsedTexts.push({ type: tag, content: text.replace(`<|${tag}_start|>`, "").replace(`<|${tag}_end|>`, "") });
+                        isSpecialTag = true;
+                        break;
+                    }
+                }
+                if (!isSpecialTag) {
+                    parsedTexts.push({ type: "text", content: text });
+                }
+            }
+            return parsedTexts;
+        }
+
+        function createAgentAvatar(agent_name) {
+            const img_div = document.createElement('div');
+            const img = document.createElement('img');
+            img.src = "/api/agent_avatar?agent_name=" + encodeURIComponent(agent_name);
+            img.style = "height:32px; width:32px; max-width:32px; max-height:32px;";
+            img_div.appendChild(img);
+            return img_div;
+        }
+
+        const doCreateChatComponent = (element, agent_name, isBot = false, chat_id = null, block_count = 0) => {
+            // Create new message element
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('chat-message');
+            if (isBot) {
+                messageElement.classList.add('right');
+            }
+            if (chat_id) {
+                messageElement.setAttribute("chat-id", chat_id);
+                messageElement.setAttribute("block-count", block_count);
+            }
+
+            // Create message timestamp element
+            const messageTimestampElement = document.createElement('div');
+            messageTimestampElement.classList.add('message-timestamp');
+            const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            messageTimestampElement.textContent = timestamp;
+
+            if (isBot) {
+                const img_div = document.createElement('div');
+                const img = document.createElement('img');
+                img.src = "/api/agent_avatar?agent_name=" + encodeURIComponent(agent_name);
+                img.style = "height:32px; width:32px; max-width:32px; max-height:32px;";
+                img_div.appendChild(img);
+                messageElement.appendChild(img_div);
+            }
+
+            // Add message text and timestamp to message element
+            messageElement.appendChild(element);
+            messageElement.appendChild(messageTimestampElement);
+
+            if (isBot && chat_id != null) {
+                // update existing chat message
+                // Avoid flashing: if messageElement already exists, check whether the innerHTML is simply appended, if so, just replace the content inside innerHTML
+                // message text
+                let old_element = $('[chat-id="' + chat_id + '"][block-count="' + block_count + '"] .message-text');
+                if (old_element.length > 0) {
+                    old_element = old_element[0];
+                    if (old_element.innerHTML == element.innerHTML) { // nothing changed
+                        return;
+                    }
+                    if (element.innerHTML.startsWith(old_element.innerHTML)) {
+                        old_element.innerHTML = element.innerHTML; // simply replace the old element
+                        if (old_element.style.backgroundColor != element.style.backgroundColor) {
+                            old_element.style.backgroundColor = element.style.backgroundColor;
+                        }
+                        return;
+                    }
+                }
+
+                // never change card element
+                card_element = $('[chat-id="' + chat_id + '"][block-count="' + block_count + '"] .card');
+                if (card_element.length > 0) {
+                    return;
+                }
+
+                // other types, replace it with new content
+                old_element = $('[chat-id="' + chat_id + '"][block-count="' + block_count + '"]');
+                if (old_element.length > 0) {
+                    old_element[0].innerHTML = messageElement.innerHTML;
+                    return;
+                }
+            }
+
+            // Add message element to chat body
+            chatBody.insertBefore(messageElement, chatBody.children[chatBody.children.length - 1]); //.appendChild(messageElement);
+        }
+
+        const createChatComponent = (element, agent_name, isBot = false, chat_id = null, block_count = 0) => {
+            doCreateChatComponent(element, agent_name, isBot, chat_id, block_count);
+
+            // Scroll chat body to bottom
+            chatBody.scrollTop = chatBody.scrollHeight;
+        }
+
+        function generateUniqueId() {
+            return Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        }
+
+        const createChatComponentFromList = (blocks, agent_name, isBot = false, highlight = false, chat_id = null) => {
+            let block_count = 0;
+            for (let block of blocks) {
+                block_count += 1;
+                if (block.type == 'text') {
+                    const messageTextElement = document.createElement('div');
+                    messageTextElement.classList.add('message-text');
+                    if (highlight) {
+                        messageTextElement.style.backgroundColor = '#600060';
+                    }
+                    messageTextElement.innerHTML = block.content;
+                    createChatComponent(messageTextElement, agent_name, isBot, chat_id, block_count);
+                } else if (block.type == 'agent') {
+                    // createChatComponent(createAgentAvatar(block.content), agent_name, isBot);
+                    const messageTextElement = document.createElement('div');
+                    //messageTextElement.classList.add('container', 'mt-5');
+                    let uniqueId = 'cardtext-' + chat_id + '-' + block_count.toString();
+                    if ($('[chat-id="' + chat_id + '"][block-count="' + block_count.toString() + '"] .card[agent-name="' + agent_name + '"]').length > 0) {
+                        continue;
+                    }
+
+                    messageTextElement.innerHTML = `
+<div class="card" style="background-color: lightyellow" agent-name="${agent_name}">
+    <div class="card-header">
+        <button class="btn btn-link float-center"
+                type="button" data-toggle="collapse" data-target="#${uniqueId}" aria-expanded="true" aria-controls="${uniqueId}"
+                style="display: flex; align-items: center">
+            ${createAgentAvatar(block.content).outerHTML}<div style="padding-left: 10px";>${block.content}</div>
+        </button>
+    </div>
+    <div id="${uniqueId}" class="collapse" style="visibility: visible; background-color: white">
+        <div class="card-body" id="${uniqueId}-content"></div>
+    </div>
+</div>
+`;
+                    //messageTextElement.textContent = `[Delivery created by ${agent_name}]`;
+                    createChatComponent(messageTextElement, agent_name, isBot, chat_id, block_count);
+                    const textbox = document.querySelector(`#${uniqueId}-content`);
+                    
+                    fetch(
+                        `/api/agent_profile?agent_name=${block.content}`,
+                        {
+                            method: 'GET',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        }
+                    ).then(response => response.json())
+                        .then(data => {
+                            textbox.textContent = data.profile;
+                        });
+                    // textbox.textContent = block.content;
+                } else if (block.type == 'delivery') {
+                    const messageTextElement = document.createElement('div');
+                    //messageTextElement.classList.add('container', 'mt-5');
+                    let uniqueId = 'cardtext-' + generateUniqueId();
+                    messageTextElement.innerHTML = `
+<div class="card" style="background-color: #f3e6fb">
+    <div class="card-header">
+        <button class="btn btn-link float-center" type="button" data-toggle="collapse" data-target="#${uniqueId}" aria-expanded="true" aria-controls="${uniqueId}">
+            🎁 Toggle Content
+        </button>
+    </div>
+    <div id="${uniqueId}" class="collapse" style="visibility: visible; background-color: white">
+        <div class="card-body" id="${uniqueId}-content">${block.content}</div>
+    </div>
+</div>
+`;
+                    //messageTextElement.textContent = `[Delivery created by ${agent_name}]`;
+                    createChatComponent(messageTextElement, agent_name, isBot, chat_id, block_count);
+                }
+            }
+        }
+
+        /*
+        Talk with agent A, agent A generates a delivery.
+
+        Then user talk with agent B, agent B can see the delivery generated by agent A
+        (we will embed this delivery into what agent B can see in the user messages).
+        */
+
+        /* Test inputs
+        
+        I would recommand <|agent_start|>Isabella Rodriguez<|agent_end|>.
+        
+        Please give
+        <|delivery_start|>
+        { "name": "some_name", "content": "some_content" }
+        <|delivery_end|>to her, thank you.
+        */
+
+        // Function to create a new chat message
+        const createChatMessage = (message, isBot = false, chat_id = null) => {
+            // parse player agent name
+            match = message.match('^<agent_name>([a-zA-Z0-9_ -]+)</agent_name>');
+            if (match) {
+                parsed_agent_name = match[1];
+                // user_name does not have avatar, use the default agent name instead
+                if (parsed_agent_name == user_name) {
+                    parsed_agent_name = agent_name;
+                }
+                message = message.substr(match[0].length);
+            } else {
+                parsed_agent_name = agent_name;
+            }
+
+            // highlight moderator preambles:
+            match = message.match('^(Day|Night) [0-9]+, [a-zA-Z0-9 ]+:');
+            if (match) {
+                message = '<strong>' + match[0] + '</strong>' + message.substr(match[0].length);
+            }
+            to_highlight = 'Now it is your turn.';
+            match_pos = message.search(to_highlight);
+            if (match_pos >= 0) {
+                message = message.substr(0, match_pos) + '<strong>' + to_highlight + '</strong>' + message.substr(match_pos + to_highlight.length);
+            }
+
+            // moderator's messages are highlighted
+            let highlight = (parsed_agent_name == getModeratorAgent());
+
+            // Create message text element
+            if (!isBot) {
+                createChatComponentFromList([{ type: 'text', content: message }], parsed_agent_name, isBot, false, chat_id);
+                return;
+            }
+            const blocks = parseOutput(message);
+            createChatComponentFromList(blocks, parsed_agent_name, isBot, highlight, chat_id);
+        };
+
+        function remove_headers(message) {
+            match = message.match('^<agent_name>([a-zA-Z0-9_ -]+)</agent_name>');
+            if (match) {
+                return message.substr(match[0].length);
+            }
+            return message;
+        }
+
+        function add_system_message(conversations) {
+            let system_prompt = '';
+            if (agent_name == getTourGuideAgent()) {
+                system_prompt = `You are the tour guide of this interactive game of the user and AI agents in an AI ville. Visitors can talk with AI agents and play a group game like Mafia here.
+                Please warmly welcome the user and introduce the rules to the user. Here are information you can use:
+
+                If you want to play the game, you need to first locate the moderator agent (**please introduce/refer it as <|agent_start|>${getModeratorAgent()}<|agent_end|>**) near the center of the town and touch it,
+                then the moderator will gather some other AI agents to play the game. Before the game starts, you can also talk with surrounding AI agents to set their personas, for example, for example, "Act as Elon Musk". If the character is not set, the character will mimic Donald Trump.
+
+                Finally, feel free to walk around the town and talk with other AI agents. There are 11 AI Agents (including the tour guide) in total, can you find all of them? ;-). Have fun!`;
+            } else if (agent_name != getModeratorAgent()) {
+                system_prompt = "You are an expert in AI agents design. Please assist the user to design the persona of a character in the game. If the user requests you to create a persona, please first output a confirmation message to the user, then output a system prompt for ChatGPT. The system prompt should be wrapped between <persona> and </persona>. For example, \"<persona>Please mimic Donald Trump.</persona>\". If the user does not request setting the persona, do not output in such a format.";
+            } else {
+                system_prompt = "You are the moderator agent in this interactive game of the user and AI agents. Please welcome the user and tell the user that you are the moderator of the game. Tell the user that they may contact the AI agents and set their character, for example, go to the agent and say \"Act as Elon Musk\". Then tell the user to get ready and say the command \"start game\". If the user requires you to act as some character, please reject and tell the user to go to the agent and say to the agent.";
+            }
+            let system_messages = [{ 'role': 'system', 'content': system_prompt }];
+            return system_messages.concat(conversations);
+        }
+
+        function appendChunkToLastChatMessage(text) {
+            $(".chat-body .chat-message.right .message-text").last().append(text);
+        }
+
+        // Function to handle new messages
+        const handleUserInputMessage = async () => {
+            const messageText = chatInputTextarea.value;
+            if (messageText.trim() === '') {
+                return;
+            }
+            if (chat_histories[agent_name] === undefined) {
+                chat_histories[agent_name] = [];
+            }
+            chat_histories[agent_name].push({ 'role': 'user', 'content': messageText });
+            createChatMessage(messageText);
+            chatInputTextarea.value = '';
+            chatInputTextarea.disabled = true;
+
+            // if the user is talking to the moderator agent, show its conversation and use the reply_event_result API
+            if (agent_name == getModeratorAgent() && game_started) {
+                console.log(`Chat response between ${user_name} and ${getModeratorAgent()}:`, messageText);
+                // send the reply back to src_agent
+                let reply_event_result_response = await fetch(`/api/reply_event_result?user_id=${user_id}&agent_name=${user_name}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        event_id: user_id,
+                        result: messageText,
+                    })
+                });
+                let reply_event_result = await reply_event_result_response.json();
+                console.log(`reply_event_result:`, reply_event_result);
+                if (reply_event_result.status != "ok") {
+                    console.error('Error: ', reply_event_result.status);
+                }
+
+                chatInputTextarea.disabled = false;
+                chatInputTextarea.focus();
+            } else {
+                if (agent_name == getModeratorAgent() && !game_started) {
+                    match = messageText.match(/start game/i);
+                    if (match != null) {
+                        game_started = true;
+                        startGame();
+
+                        chatInputTextarea.disabled = false;
+                        chatInputTextarea.focus();
+                        return;
+                    }
+                }
+
+                // If we talk to other agents, call chat web service
+                const response = await fetch('/api/chat_stream_post_input', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ user_id: user_id, agent_name: agent_name, conversations: add_system_message(chat_histories[agent_name]) })
+                });
+
+                if (!response.ok) {
+                    console.error('Error:', response.status);
+                    return;
+                }
+                const responseData = await response.json();
+                let chat_id = responseData.chat_id;
+
+                const es = new EventSource(`/api/chat_stream_pull_response?chat_id=${chat_id}`);
+                const chat_agent_name = agent_name;
+
+                es.onopen = function(event) {
+                    if (agent_name != chat_agent_name) {
+                        return;
+                    }
+                    createChatMessage("", true, chat_id);
+                }
+
+                let reply = '';
+                es.onmessage = function(event) {
+                    if (agent_name != chat_agent_name) {
+                        return;
+                    }
+                    reply += event.data;
+
+                    // update personas if the response contains such information
+                    const regexp = /<persona>([^<]+)<\/persona>/;
+                    match = reply.match(regexp);
+                    if (match != null) {
+                        // update the persona
+                        let persona = match[1];
+                        fetch(`/api/update_persona?user_id=${user_id}&agent_name=${agent_name}`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ persona: persona }),
+                        });
+                        reply = reply.replace(regexp, "The persona has been set.");
+                    }
+
+                    // update user context
+                    for (let block of parseOutput(reply, chat_id)) {
+                        if (block.type == 'delivery') {
+                            console.log(`delivery: ${block.content}`);
+                            if (user_id in user_context) {
+                                user_context[user_id].push(block.content);
+                            } else {
+                                user_context[user_id] = [block.content];
+                            }
+                        }
+                    }
+
+                    // Append the new chunk to the chat UI
+                    // incremental update parsed results
+                    createChatMessage(reply, true, chat_id);
+                    // below is a deprecated method to stream text response without parsing
+                    // appendChunkToLastChatMessage(event.data);
+                };
+
+                es.onerror = function(event) {
+                    // typically the error occurs when the server side closes the connection when streaming response completes
+                    console.log('Error occurred:', event);
+                    es.close();
+
+                    if (agent_name != chat_agent_name) {
+                        return;
+                    }
+
+                    // on completion
+                    chatInputTextarea.disabled = false;
+                    // Focus on input field
+                    chatInputTextarea.focus();
+
+                    // record chat history
+                    chat_histories[agent_name].push({ 'role': 'assistant', 'content': reply });
+                };
+            }
+        };
+
+        // Handle send button click
+        chatInputButton.addEventListener('click', handleUserInputMessage);
+
+        // Handle enter key press
+        chatInputTextarea.addEventListener('keydown', event => {
+            if (event.code === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                handleUserInputMessage();
+            }
+        });
+
+        const loadAgentAsync = async () => {
+            const agent_profile_response = await fetch(
+                `/api/agent_profile?agent_name=${agent_name}`,
+                {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+            const agent_profile = await agent_profile_response.json();
+
+            if (!game_initialized && agent_name === getModeratorAgent()) {
+                game_initialized = true;
+                initializeGame();
+            }
+
+            if (agent_name != getModeratorAgent() || !game_started) {
+                const agent_chat_response = await fetch(`/api/get_chat?user_id=${user_id}&agent_name=${agent_name}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                const agent_chat = await agent_chat_response.json();
+                chatBody.innerHTML = '<div style="height: 80px"></div>';
+                chat_histories[agent_name] = agent_chat.conversations;
+            } else {
+                if (agent_ai_conversations[user_name] !== undefined) {
+                    chat_histories[agent_name] = agent_ai_conversations[user_name];
+                }
+            }
+
+            createChatMessage(agent_profile.greetings, true);
+
+            for (let i = 0; i < chat_histories[agent_name].length; i++) {
+                let conversation = chat_histories[agent_name][i];
+                if (conversation.role == 'user') {
+                    createChatMessage(conversation.content);
+                } else if (conversation.role == 'assistant') {
+                    createChatMessage(conversation.content, true);
+                }
+            }
+        };
+
+        function selectAgent(selected_agent_name) {
+            agent_name = selected_agent_name;
+            if (chat_histories[agent_name] === undefined) {
+                chat_histories[agent_name] = [];
+            }
+            loadAgentAsync();
+        }
+
+        const proxyAgentChat = async (event_id, src_agent, target_agent, messages) => {
+            if (target_agent == user_name) {
+                console.log("Writing to the interactive user: src_agent=" + src_agent + " target_agent=" + target_agent, messages);
+                for (let index in messages) {
+                    let message = messages[index];
+                    if (typeof (message) === "string") {
+                        chat_histories[src_agent].push({ "role": "assistant", "content": message });
+                    } else {
+                        message["role"] = "assistant";
+                        chat_histories[src_agent].push(message);
+                    }
+                }
+                if (agent_name == src_agent) { // reload responses of moderator agent
+                    $('div.chat-message').remove();
+                    loadAgentAsync();
+                }
+                // wait for user input, user input is handled there
+                return;
+            }
+
+            if (agent_ai_conversations[target_agent] == undefined) {
+                agent_ai_conversations[target_agent] = [];
+            }
+            for (let index in messages) {
+                let message = messages[index];
+                if (typeof (message) === "string") {
+                    agent_ai_conversations[target_agent].push({ "role": "user", "content": remove_headers(message) });
+                } else {
+                    message['content'] = remove_headers(message['content']);
+                    agent_ai_conversations[target_agent].push(message);
+                }
+            };
+            let chat_reply_response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    user_id: src_agent,  // the src_agent is the sender / user_id
+                    agent_name: target_agent,
+                    conversations: agent_ai_conversations[target_agent]
+                })
+            });
+            let chat_reply = await chat_reply_response.json();
+            console.log(`Chat response between ${src_agent} and ${target_agent}:`, chat_reply);
+            // send the reply back to src_agent
+            let reply_event_result_response = await fetch(`/api/reply_event_result?user_id=${user_id}&agent_name=${target_agent}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    event_id: event_id,
+                    result: chat_reply.reply,
+                })
+            });
+            let reply_event_result = await reply_event_result_response.json();
+            console.log(`reply_event_result:`, reply_event_result);
+            if (reply_event_result.status != "ok") {
+                console.error('Error: ', reply_event_result.status);
+                return;
+            }
+        };
+        /*
+        example post:
+        
+        user_id=user
+        {
+          "event_id": "event1",
+          "agent_name": "Isabella Rodriguez",
+          "event_type": "agent_chat",
+          "target_agent_name": "Klaus Mueller",
+          "content": "Hello, how are you today?"
+        }
+        */
+
+        const pollAgentChatEvents = async () => {
+            const agent_chat_event_response = await fetch(
+                `/api/pull_chat_event?user_id=${user_id}`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+            const agent_chat_event = await agent_chat_event_response.json();
+            console.log("Polled agent_chat_event:", agent_chat_event);
+
+            if (chat_histories[agent_chat_event.agent_name] === undefined) {
+                console.log('Received event for non-existing agent: ' + agent_chat_event.agent_name);
+            } else {
+                if (agent_chat_event.event_type == 'agent_chat') {
+                    proxyAgentChat(
+                        agent_chat_event.event_id,
+                        agent_chat_event.agent_name,
+                        agent_chat_event.target_agent_name,
+                        agent_chat_event.messages);
+                } else {
+                    console.log(`Unsupported event_type: ${agent_chat_event.event_type}`);
+                }
+            }
+
+            // long-polling: poll the agent again if the previous poll completes
+            pollAgentChatEvents();
+        };
+
+        function initAgent(agent_name) {
+            chat_histories[agent_name] = [];
+            agent_names.push(agent_name);
+        }
+
+        function initializeGame() {
+            // move personas to their places
+            gameWindow.startMovePersonas();
+        }
+
+        function startGame() {
+            initAgent(user_name); // interactive user is the last agent
+            pollAgentChatEvents();
+
+            let num_players = agent_names.length;
+            fetch(`/api/init_game`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    user_id: user_id,
+                    num_players: num_players,
+                    player_names: agent_names,
+                    moderator: getModeratorAgent(),
+                    interactive_players: [user_name],
+                    personas: []
+                })
+            });
+        }
+    </script>
+</body>
+
+</html>

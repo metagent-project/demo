@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+jinja2
+pillow
+openai
+tiktoken
+numpy
+httpx
